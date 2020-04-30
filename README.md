@@ -1,5 +1,8 @@
 # Bare Metal Operator
 
+[![Ubuntu V1alpha3 build status](https://jenkins.nordix.org/view/Airship/job/airship_master_v1a3_integration_test_ubuntu/badge/icon?subject=Ubuntu%20E2E%20V1alpha3)](https://jenkins.nordix.org/view/Airship/job/airship_master_v1a3_integration_test_ubuntu/)
+[![CentOS V1alpha3 build status](https://jenkins.nordix.org/view/Airship/job/airship_master_v1a3_integration_test_centos/badge/icon?subject=CentOS%20E2E%20V1alpha3)](https://jenkins.nordix.org/view/Airship/job/airship_master_v1a3_integration_test_centos/)
+
 The Bare Metal Operator implements a Kubernetes API for managing bare metal
 hosts.  It maintains an inventory of available hosts as instances of the
 `BareMetalHost` Custom Resource Definition.  The Bare Metal Operator knows how

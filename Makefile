@@ -9,11 +9,14 @@ GIT_COMMIT="$(shell git rev-parse --verify 'HEAD^{commit}')"
 export LDFLAGS="-X github.com/metal3-io/baremetal-operator/pkg/version.Raw=$(shell git describe --always --abbrev=40 --dirty) -X github.com/metal3-io/baremetal-operator/pkg/version.Commit=${GIT_COMMIT}"
 
 # Set some variables the operator expects to have in order to work
+# Those need to be the same as in deploy/ironic_ci.env
 export OPERATOR_NAME=baremetal-operator
-export DEPLOY_KERNEL_URL=http://172.22.0.1/images/ironic-python-agent.kernel
-export DEPLOY_RAMDISK_URL=http://172.22.0.1/images/ironic-python-agent.initramfs
+export DEPLOY_KERNEL_URL=http://172.22.0.1:6180/images/ironic-python-agent.kernel
+export DEPLOY_RAMDISK_URL=http://172.22.0.1:6180/images/ironic-python-agent.initramfs
 export IRONIC_ENDPOINT=http://localhost:6385/v1/
 export IRONIC_INSPECTOR_ENDPOINT=http://localhost:5050/v1/
+export GO111MODULE=on
+export GOFLAGS=
 
 .PHONY: help
 help:
@@ -34,12 +37,18 @@ help:
 	@echo "  DEBUG            -- debug flag, if any ($(DEBUG))"
 
 .PHONY: test
-test: generate unit lint dep-check
+test: generate unit lint
 
 .PHONY: generate
 generate:
 	operator-sdk generate k8s
-	operator-sdk generate openapi
+	openapi-gen \
+		--input-dirs ./pkg/apis/metal3/v1alpha1 \
+		--output-package ./pkg/apis/metal3/v1alpha1 \
+		--output-base "" \
+		--output-file-base zz_generated.openapi \
+		--report-filename "-" \
+		--go-header-file /dev/null
 
 .PHONY: travis
 travis: unit-verbose lint
@@ -62,12 +71,12 @@ unit-cover-html:
 unit-verbose:
 	VERBOSE=-v make unit
 
-crd_file=deploy/crds/metal3_v1alpha1_baremetalhost_crd.yaml
+crd_file=deploy/crds/metal3.io_baremetalhosts_crd.yaml
 crd_tmp=.crd.yaml.tmp
 
 .PHONY: lint
 lint: test-sec $GOPATH/bin/golint
-	golint -set_exit_status pkg/... cmd/...
+	find ./pkg ./cmd -type f -name \*.go  |grep -v zz_ | xargs -L1 golint -set_exit_status
 	go vet ./pkg/... ./cmd/...
 	cp $(crd_file) $(crd_tmp); make generate; if ! diff -q $(crd_file) $(crd_tmp); then mv $(crd_tmp) $(crd_file); exit 1; else rm $(crd_tmp); fi
 
@@ -94,10 +103,6 @@ e2e-local:
 		--up-local $(SETUP) \
 		$(DEBUG) --go-test-flags "$(GO_TEST_FLAGS)"
 
-.PHONY: dep
-dep:
-	dep ensure
-
 .PHONY: run
 run:
 	operator-sdk up local \
@@ -123,15 +128,6 @@ build:
 
 .PHONY: deploy
 deploy:
-	echo "{ \"kind\": \"Namespace\", \"apiVersion\": \"v1\", \"metadata\": { \"name\": \"$(RUN_NAMESPACE)\", \"labels\": { \"name\": \"$(RUN_NAMESPACE)\" } } }" | kubectl apply -f -
-	kubectl apply -f deploy/service_account.yaml -n $(RUN_NAMESPACE)
-	kubectl apply -f deploy/role.yaml -n $(RUN_NAMESPACE)
-	kubectl apply -f deploy/role_binding.yaml
-	kubectl apply -f deploy/crds/metal3_v1alpha1_baremetalhost_crd.yaml
-	kubectl apply -f deploy/ironic_bmo_configmap.yaml -n $(RUN_NAMESPACE)
-	kubectl apply -f deploy/mariadb-password.yaml -n $(RUN_NAMESPACE)
-	kubectl apply -f deploy/operator_ironic.yaml -n $(RUN_NAMESPACE)
+	cd deploy && kustomize edit set namespace $(RUN_NAMESPACE) && cd ..
+	kustomize build deploy | kubectl apply -f -
 
-.PHONY: dep-check
-dep-check:
-	dep check

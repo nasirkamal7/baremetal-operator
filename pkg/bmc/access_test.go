@@ -230,7 +230,6 @@ func TestParse(t *testing.T) {
 			Hostname: "192.168.122.1",
 			Path:     "",
 		},
-
 	} {
 		t.Run(tc.Scenario, func(t *testing.T) {
 			url, err := getParsedURL(tc.Address)
@@ -296,6 +295,10 @@ func TestStaticDriverInfo(t *testing.T) {
 		needsMac bool
 		driver   string
 		boot     string
+		management string
+		power string
+		raid string
+		vendor string
 	}{
 		{
 			Scenario: "ipmi",
@@ -303,6 +306,10 @@ func TestStaticDriverInfo(t *testing.T) {
 			needsMac: false,
 			driver:   "ipmi",
 			boot:     "ipxe",
+			management: "",
+			power: "",
+			raid: "",
+			vendor: "",
 		},
 
 		{
@@ -311,6 +318,10 @@ func TestStaticDriverInfo(t *testing.T) {
 			needsMac: true,
 			driver:   "ipmi",
 			boot:     "ipxe",
+			management: "",
+			power: "",
+			raid: "",
+			vendor: "",
 		},
 
 		{
@@ -319,6 +330,10 @@ func TestStaticDriverInfo(t *testing.T) {
 			needsMac: false,
 			driver:   "idrac",
 			boot:     "ipxe",
+			management: "",
+			power: "",
+			raid: "",
+			vendor: "",
 		},
 
 		{
@@ -327,6 +342,10 @@ func TestStaticDriverInfo(t *testing.T) {
 			needsMac: false,
 			driver:   "irmc",
 			boot:     "pxe",
+			management: "",
+			power: "",
+			raid: "irmc",
+			vendor: "",
 		},
 
 		{
@@ -334,12 +353,47 @@ func TestStaticDriverInfo(t *testing.T) {
 			input:    "redfish://192.168.122.1",
 			needsMac: true,
 			driver:   "redfish",
-			boot:     "pxe",
+			boot:     "ipxe",
+			management: "",
+			power: "",
+			raid: "",
+			vendor: "",
 		},
 
+		{
+			Scenario: "redfish virtual media",
+			input:    "redfish-virtualmedia://192.168.122.1",
+			needsMac: true,
+			driver:   "redfish",
+			boot:     "redfish-virtual-media",
+			management: "",
+			power: "",
+			raid: "",
+			vendor: "",
+		},
+
+		{
+			Scenario: "ilo5 virtual media",
+			input:    "ilo5-virtualmedia://192.168.122.1",
+			needsMac: true,
+			driver:   "redfish",
+			boot:     "redfish-virtual-media",
+		},
+
+		{
+			Scenario: "idrac virtual media",
+			input:    "idrac-virtualmedia://192.168.122.1",
+			needsMac: true,
+			driver:   "idrac",
+			boot:     "idrac-redfish-virtual-media",
+			management: "idrac-redfish",
+			power: "idrac-redfish",
+			raid: "no-raid",
+			vendor: "no-vendor",
+		},
 	} {
 		t.Run(tc.Scenario, func(t *testing.T) {
-			acc, err := NewAccessDetails(tc.input)
+			acc, err := NewAccessDetails(tc.input, false)
 			if err != nil {
 				t.Fatalf("unexpected parse error: %v", err)
 			}
@@ -359,199 +413,251 @@ func TestStaticDriverInfo(t *testing.T) {
 
 func TestDriverInfo(t *testing.T) {
 	for _, tc := range []struct {
-		Scenario	string
-		input   	string
-		expects 	map[string]string
+		Scenario string
+		input    string
+		expects  map[string]interface{}
 	}{
 		{
 			Scenario: "ipmi default port",
-			input: "ipmi://192.168.122.1",
-			expects: map[string]string{
-				"ipmi_port":     ipmiDefaultPort,
-				"ipmi_password": "",
-				"ipmi_username": "",
-				"ipmi_address":  "192.168.122.1",
+			input:    "ipmi://192.168.122.1",
+			expects: map[string]interface{}{
+				"ipmi_port":      ipmiDefaultPort,
+				"ipmi_password":  "",
+				"ipmi_username":  "",
+				"ipmi_address":   "192.168.122.1",
+				"ipmi_verify_ca": false,
 			},
 		},
 
 		{
 			Scenario: "idrac",
-			input: "idrac://192.168.122.1",
-			expects: map[string]string{
-				"drac_address":  "192.168.122.1",
-				"drac_password": "",
-				"drac_username": "",
+			input:    "idrac://192.168.122.1",
+			expects: map[string]interface{}{
+				"drac_address":   "192.168.122.1",
+				"drac_password":  "",
+				"drac_username":  "",
+				"drac_verify_ca": false,
 			},
 		},
 
 		{
 			Scenario: "idrac http",
-			input: "idrac+http://192.168.122.1",
-			expects: map[string]string{
-				"drac_address":  "192.168.122.1",
-				"drac_protocol": "http",
-				"drac_password": "",
-				"drac_username": "",
+			input:    "idrac+http://192.168.122.1",
+			expects: map[string]interface{}{
+				"drac_address":   "192.168.122.1",
+				"drac_protocol":  "http",
+				"drac_password":  "",
+				"drac_username":  "",
+				"drac_verify_ca": false,
 			},
 		},
 
 		{
 			Scenario: "idrac https",
-			input: "idrac+https://192.168.122.1",
-			expects: map[string]string{
-				"drac_address":  "192.168.122.1",
-				"drac_protocol": "https",
-				"drac_password": "",
-				"drac_username": "",
+			input:    "idrac+https://192.168.122.1",
+			expects: map[string]interface{}{
+				"drac_address":   "192.168.122.1",
+				"drac_protocol":  "https",
+				"drac_password":  "",
+				"drac_username":  "",
+				"drac_verify_ca": false,
 			},
 		},
 
 		{
 			Scenario: "idrac port and path http",
-			input: "idrac://192.168.122.1:8080/foo",
-			expects: map[string]string{
-				"drac_address":  "192.168.122.1",
-				"drac_port":     "8080",
-				"drac_path":     "/foo",
-				"drac_password": "",
-				"drac_username": "",
+			input:    "idrac://192.168.122.1:8080/foo",
+			expects: map[string]interface{}{
+				"drac_address":   "192.168.122.1",
+				"drac_port":      "8080",
+				"drac_path":      "/foo",
+				"drac_password":  "",
+				"drac_username":  "",
+				"drac_verify_ca": false,
 			},
 		},
 
 		{
 			Scenario: "idrac ipv6",
-			input: "idrac://[fe80::fc33:62ff:fe83:8a76]/foo",
-			expects: map[string]string{
-				"drac_address":  "fe80::fc33:62ff:fe83:8a76",
-				"drac_path":     "/foo",
-				"drac_password": "",
-				"drac_username": "",
+			input:    "idrac://[fe80::fc33:62ff:fe83:8a76]/foo",
+			expects: map[string]interface{}{
+				"drac_address":   "fe80::fc33:62ff:fe83:8a76",
+				"drac_path":      "/foo",
+				"drac_password":  "",
+				"drac_username":  "",
+				"drac_verify_ca": false,
 			},
 		},
 
 		{
 			Scenario: "idrac ipv6 port and path",
-			input: "idrac://[fe80::fc33:62ff:fe83:8a76]:8080/foo",
-			expects: map[string]string{
-				"drac_address":  "fe80::fc33:62ff:fe83:8a76",
-				"drac_port":     "8080",
-				"drac_path":     "/foo",
-				"drac_password": "",
-				"drac_username": "",
+			input:    "idrac://[fe80::fc33:62ff:fe83:8a76]:8080/foo",
+			expects: map[string]interface{}{
+				"drac_address":   "fe80::fc33:62ff:fe83:8a76",
+				"drac_port":      "8080",
+				"drac_path":      "/foo",
+				"drac_password":  "",
+				"drac_username":  "",
+				"drac_verify_ca": false,
 			},
 		},
 
 		{
 			Scenario: "irmc",
-			input: "irmc://192.168.122.1",
-			expects: map[string]string{
-				"irmc_address":  "192.168.122.1",
-				"irmc_password": "",
-				"irmc_username": "",
+			input:    "irmc://192.168.122.1",
+			expects: map[string]interface{}{
+				"irmc_address":   "192.168.122.1",
+				"irmc_password":  "",
+				"irmc_username":  "",
+				"irmc_verify_ca": false,
 			},
 		},
 
 		{
 			Scenario: "irmc port",
-			input: "irmc://192.168.122.1:8080",
-			expects: map[string]string{
-				"irmc_address":  "192.168.122.1",
-				"irmc_port":     "8080",
-				"irmc_password": "",
-				"irmc_username": "",
+			input:    "irmc://192.168.122.1:8080",
+			expects: map[string]interface{}{
+				"irmc_address":   "192.168.122.1",
+				"irmc_port":      "8080",
+				"irmc_password":  "",
+				"irmc_username":  "",
+				"irmc_verify_ca": false,
 			},
 		},
 
 		{
 			Scenario: "irmc ipv6",
-			input: "irmc://[fe80::fc33:62ff:fe83:8a76]",
-			expects: map[string]string{
-				"irmc_address":  "fe80::fc33:62ff:fe83:8a76",
-				"irmc_password": "",
-				"irmc_username": "",
+			input:    "irmc://[fe80::fc33:62ff:fe83:8a76]",
+			expects: map[string]interface{}{
+				"irmc_address":   "fe80::fc33:62ff:fe83:8a76",
+				"irmc_password":  "",
+				"irmc_username":  "",
+				"irmc_verify_ca": false,
 			},
 		},
 
 		{
 			Scenario: "irmc ipv6 port",
-			input: "irmc://[fe80::fc33:62ff:fe83:8a76]:8080",
-			expects: map[string]string{
-				"irmc_address":  "fe80::fc33:62ff:fe83:8a76",
-				"irmc_port":     "8080",
-				"irmc_password": "",
-				"irmc_username": "",
+			input:    "irmc://[fe80::fc33:62ff:fe83:8a76]:8080",
+			expects: map[string]interface{}{
+				"irmc_address":   "fe80::fc33:62ff:fe83:8a76",
+				"irmc_port":      "8080",
+				"irmc_password":  "",
+				"irmc_username":  "",
+				"irmc_verify_ca": false,
 			},
 		},
 
 		{
 			Scenario: "Redfish",
-			input: "redfish://192.168.122.1/foo/bar",
-			expects: map[string]string{
-				"redfish_address":  	"https://192.168.122.1",
-				"redfish_system_id":	"/foo/bar",
-				"redfish_password": "",
-				"redfish_username": "",
+			input:    "redfish://192.168.122.1/foo/bar",
+			expects: map[string]interface{}{
+				"redfish_address":   "https://192.168.122.1",
+				"redfish_system_id": "/foo/bar",
+				"redfish_password":  "",
+				"redfish_username":  "",
+				"redfish_verify_ca": false,
 			},
 		},
 
 		{
 			Scenario: "Redfish http",
-			input: "redfish+http://192.168.122.1/foo/bar",
-			expects: map[string]string{
-				"redfish_address":  	"http://192.168.122.1",
-				"redfish_system_id":	"/foo/bar",
-				"redfish_password": "",
-				"redfish_username": "",
+			input:    "redfish+http://192.168.122.1/foo/bar",
+			expects: map[string]interface{}{
+				"redfish_address":   "http://192.168.122.1",
+				"redfish_system_id": "/foo/bar",
+				"redfish_password":  "",
+				"redfish_username":  "",
+				"redfish_verify_ca": false,
 			},
 		},
 
 		{
 			Scenario: "Redfish https",
-			input: "redfish+https://192.168.122.1/foo/bar",
-			expects: map[string]string{
-				"redfish_address":  	"https://192.168.122.1",
-				"redfish_system_id":	"/foo/bar",
-				"redfish_password": "",
-				"redfish_username": "",
+			input:    "redfish+https://192.168.122.1/foo/bar",
+			expects: map[string]interface{}{
+				"redfish_address":   "https://192.168.122.1",
+				"redfish_system_id": "/foo/bar",
+				"redfish_password":  "",
+				"redfish_username":  "",
+				"redfish_verify_ca": false,
 			},
 		},
 
 		{
 			Scenario: "Redfish port",
-			input: "redfish://192.168.122.1:8080/foo/bar",
-			expects: map[string]string{
-				"redfish_address":  	"https://192.168.122.1:8080",
-				"redfish_system_id":	"/foo/bar",
-				"redfish_password": "",
-				"redfish_username": "",
+			input:    "redfish://192.168.122.1:8080/foo/bar",
+			expects: map[string]interface{}{
+				"redfish_address":   "https://192.168.122.1:8080",
+				"redfish_system_id": "/foo/bar",
+				"redfish_password":  "",
+				"redfish_username":  "",
+				"redfish_verify_ca": false,
 			},
 		},
 
 		{
 			Scenario: "Redfish ipv6",
-			input: "redfish://[fe80::fc33:62ff:fe83:8a76]/foo/bar",
-			expects: map[string]string{
-				"redfish_address":  	"https://[fe80::fc33:62ff:fe83:8a76]",
-				"redfish_system_id":	"/foo/bar",
-				"redfish_password": "",
-				"redfish_username": "",
+			input:    "redfish://[fe80::fc33:62ff:fe83:8a76]/foo/bar",
+			expects: map[string]interface{}{
+				"redfish_address":   "https://[fe80::fc33:62ff:fe83:8a76]",
+				"redfish_system_id": "/foo/bar",
+				"redfish_password":  "",
+				"redfish_username":  "",
+				"redfish_verify_ca": false,
 			},
 		},
 
 		{
 			Scenario: "Redfish ipv6 port",
-			input: "redfish://[fe80::fc33:62ff:fe83:8a76]:8080/foo",
-			expects: map[string]string{
-				"redfish_address":  	"https://[fe80::fc33:62ff:fe83:8a76]:8080",
-				"redfish_system_id":	"/foo",
-				"redfish_password": "",
-				"redfish_username": "",
+			input:    "redfish://[fe80::fc33:62ff:fe83:8a76]:8080/foo",
+			expects: map[string]interface{}{
+				"redfish_address":   "https://[fe80::fc33:62ff:fe83:8a76]:8080",
+				"redfish_system_id": "/foo",
+				"redfish_password":  "",
+				"redfish_username":  "",
+				"redfish_verify_ca": false,
 			},
 		},
 
+		{
+			Scenario: "Redfish virtual media",
+			input:    "redfish-virtualmedia://192.168.122.1/foo/bar",
+			expects: map[string]interface{}{
+				"redfish_address":   "https://192.168.122.1",
+				"redfish_system_id": "/foo/bar",
+				"redfish_password":  "",
+				"redfish_username":  "",
+				"redfish_verify_ca": false,
+			},
+		},
+
+		{
+			Scenario: "ilo5 virtual media",
+			input:    "ilo5-virtualmedia://192.168.122.1/foo/bar",
+			expects: map[string]interface{}{
+				"redfish_address":   "https://192.168.122.1",
+				"redfish_system_id": "/foo/bar",
+				"redfish_password":  "",
+				"redfish_username":  "",
+				"redfish_verify_ca": false,
+			},
+		},
+
+		{
+			Scenario: "idrac virtual media",
+			input:    "idrac-virtualmedia://192.168.122.1/foo/bar",
+			expects: map[string]interface{}{
+				"redfish_address":   "https://192.168.122.1",
+				"redfish_system_id": "/foo/bar",
+				"redfish_password":  "",
+				"redfish_username":  "",
+				"redfish_verify_ca": false,
+			},
+		},
 	} {
 		t.Run(tc.Scenario, func(t *testing.T) {
-			acc, err := NewAccessDetails(tc.input)
+			acc, err := NewAccessDetails(tc.input, true)
 			if err != nil {
 				t.Fatalf("unexpected parse error: %v", err)
 			}
@@ -572,9 +678,8 @@ func TestDriverInfo(t *testing.T) {
 	}
 }
 
-
 func TestUnknownType(t *testing.T) {
-	acc, err := NewAccessDetails("foo://192.168.122.1")
+	acc, err := NewAccessDetails("foo://192.168.122.1", false)
 	if err == nil || acc != nil {
 		t.Fatalf("unexpected parse success")
 	}

@@ -2,13 +2,12 @@ package ironic
 
 import (
 	"fmt"
-	"io/ioutil"
-	"net/http"
-	"net/url"
 	"os"
 	"sort"
 	"strings"
 	"time"
+
+	"sigs.k8s.io/yaml"
 
 	"github.com/gophercloud/gophercloud"
 	"github.com/gophercloud/gophercloud/openstack/baremetal/noauth"
@@ -111,7 +110,7 @@ func newProvisioner(host *metal3v1alpha1.BareMetalHost, bmcCreds bmc.Credentials
 	if err != nil {
 		return nil, err
 	}
-	bmcAccess, err := bmc.NewAccessDetails(host.Spec.BMC.Address)
+	bmcAccess, err := bmc.NewAccessDetails(host.Spec.BMC.Address, host.Spec.BMC.DisableCertificateVerification)
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to parse BMC address information")
 	}
@@ -240,10 +239,15 @@ func (p *ironicProvisioner) ValidateManagementAccess(credentialsChanged bool) (r
 		ironicNode, err = nodes.Create(
 			p.client,
 			nodes.CreateOpts{
-				Driver:        p.bmcAccess.Driver(),
-				BootInterface: p.bmcAccess.BootInterface(),
-				Name:          p.host.Name,
-				DriverInfo:    driverInfo,
+				Driver:              p.bmcAccess.Driver(),
+				BootInterface:       p.bmcAccess.BootInterface(),
+				Name:                p.host.Name,
+				DriverInfo:          driverInfo,
+				InspectInterface:    "inspector",
+				ManagementInterface: p.bmcAccess.ManagementInterface(),
+				PowerInterface:      p.bmcAccess.PowerInterface(),
+				RAIDInterface:       p.bmcAccess.RAIDInterface(),
+				VendorInterface:     p.bmcAccess.VendorInterface(),
 			}).Extract()
 		// FIXME(dhellmann): Handle 409 and 503? errors here.
 		if err != nil {
@@ -276,12 +280,7 @@ func (p *ironicProvisioner) ValidateManagementAccess(credentialsChanged bool) (r
 		}
 
 		if p.host.Spec.Image != nil && p.host.Spec.Image.URL != "" {
-			// FIXME(dhellmann): The Stein version of Ironic supports passing
-			// a URL. When we upgrade, we can stop doing this work ourself.
-			checksum, err := p.getImageChecksum()
-			if err != nil {
-				return result, errors.Wrap(err, "failed to retrieve image checksum")
-			}
+			checksum := p.host.Spec.Image.Checksum
 
 			p.log.Info("setting instance info",
 				"image_source", p.host.Spec.Image.URL,
@@ -299,13 +298,10 @@ func (p *ironicProvisioner) ValidateManagementAccess(credentialsChanged bool) (r
 					Path:  "/instance_info/image_checksum",
 					Value: checksum,
 				},
-				// NOTE(dhellmann): We must fill in *some* value so that
-				// Ironic will monitor the host. We don't have a nova
-				// instance at all, so just give the node it's UUID again.
 				nodes.UpdateOperation{
 					Op:    nodes.ReplaceOp,
 					Path:  "/instance_uuid",
-					Value: p.host.Status.Provisioning.ID,
+					Value: string(p.host.ObjectMeta.UID),
 				},
 			}
 			_, err = nodes.Update(p.client, ironicNode.UUID, updates).Extract()
@@ -481,13 +477,16 @@ func getNICDetails(ifdata []introspection.InterfaceType,
 	for i, intf := range ifdata {
 		baseIntf := basedata[intf.Name]
 		vlans, vlanid := getVLANs(baseIntf)
-
+		ip := intf.IPV4Address
+		if ip == "" {
+			ip = intf.IPV6Address
+		}
 		nics[i] = metal3v1alpha1.NIC{
 			Name: intf.Name,
 			Model: strings.TrimLeft(fmt.Sprintf("%s %s",
 				intf.Vendor, intf.Product), " "),
 			MAC:       intf.MACAddress,
-			IP:        intf.IPV4Address,
+			IP:        ip,
 			VLANs:     vlans,
 			VLANID:    vlanid,
 			SpeedGbps: getNICSpeedGbps(extradata[intf.Name]),
@@ -590,15 +589,24 @@ func (p *ironicProvisioner) InspectHardware() (result provisioner.Result, detail
 	status, err := introspection.GetIntrospectionStatus(p.inspector, ironicNode.UUID).Extract()
 	if err != nil {
 		if _, isNotFound := err.(gophercloud.ErrDefault404); isNotFound {
-			p.log.Info("starting new hardware inspection")
-			result, err = p.changeNodeProvisionState(
-				ironicNode,
-				nodes.ProvisionStateOpts{Target: nodes.TargetInspect},
-			)
-			if err == nil {
-				p.publisher("InspectionStarted", "Hardware inspection started")
+			switch nodes.ProvisionState(ironicNode.ProvisionState) {
+			case nodes.Inspecting, nodes.InspectWait:
+				p.log.Info("inspection already started")
+				result.Dirty = true
+				result.RequeueAfter = introspectionRequeueDelay
+				err = nil
+				return
+			default:
+				p.log.Info("starting new hardware inspection")
+				result, err = p.changeNodeProvisionState(
+					ironicNode,
+					nodes.ProvisionStateOpts{Target: nodes.TargetInspect},
+				)
+				if err == nil {
+					p.publisher("InspectionStarted", "Hardware inspection started")
+				}
+				return
 			}
-			return
 		}
 		err = errors.Wrap(err, "failed to extract hardware inspection status")
 		return
@@ -668,42 +676,6 @@ func (p *ironicProvisioner) UpdateHardwareState() (result provisioner.Result, er
 	return result, nil
 }
 
-func checksumIsURL(checksumURL string) (bool, error) {
-	parsedChecksumURL, err := url.Parse(checksumURL)
-	if err != nil {
-		return false, errors.Wrap(err, "Could not parse image checksum")
-	}
-	return parsedChecksumURL.Scheme != "", nil
-}
-
-func (p *ironicProvisioner) getImageChecksum() (string, error) {
-	checksum := p.host.Spec.Image.Checksum
-	isURL, err := checksumIsURL(checksum)
-	if err != nil {
-		return "", errors.Wrap(err, "Could not understand image checksum")
-	}
-	if isURL {
-		p.log.Info("looking for checksum for image", "URL", checksum)
-		// #nosec
-		// TODO: Are there more ways to constraint the URL that's given here?
-		resp, err := http.Get(checksum)
-		if err != nil {
-			return "", errors.Wrap(err, "Could not fetch image checksum")
-		}
-		defer resp.Body.Close()
-		if resp.StatusCode != 200 {
-			return "", fmt.Errorf("Failed to fetch image checksum from %s: [%d] %s",
-				checksum, resp.StatusCode, resp.Status)
-		}
-		checksumBody, err := ioutil.ReadAll(resp.Body)
-		if err != nil {
-			return "", errors.Wrap(err, "Could not read image checksum")
-		}
-		checksum = strings.TrimSpace(string(checksumBody))
-	}
-	return checksum, nil
-}
-
 func (p *ironicProvisioner) getUpdateOptsForNode(ironicNode *nodes.Node, checksum string) (updates nodes.UpdateOpts, err error) {
 
 	hwProf, err := hardware.GetProfile(p.host.HardwareProfile())
@@ -749,17 +721,13 @@ func (p *ironicProvisioner) getUpdateOptsForNode(ironicNode *nodes.Node, checksu
 	)
 
 	// instance_uuid
-	//
-	// NOTE(dhellmann): We must fill in *some* value so that Ironic
-	// will monitor the host. We don't have a nova instance at all, so
-	// just give the node it's UUID again.
 	p.log.Info("setting instance_uuid")
 	updates = append(
 		updates,
 		nodes.UpdateOperation{
 			Op:    nodes.ReplaceOp,
 			Path:  "/instance_uuid",
-			Value: p.host.Status.Provisioning.ID,
+			Value: string(p.host.ObjectMeta.UID),
 		},
 	)
 
@@ -854,7 +822,7 @@ func (p *ironicProvisioner) getUpdateOptsForNode(ironicNode *nodes.Node, checksu
 	return updates, nil
 }
 
-func (p *ironicProvisioner) startProvisioning(ironicNode *nodes.Node, checksum string, getUserData provisioner.UserDataSource) (result provisioner.Result, err error) {
+func (p *ironicProvisioner) startProvisioning(ironicNode *nodes.Node, checksum string, hostConf provisioner.HostConfigData) (result provisioner.Result, err error) {
 
 	p.log.Info("starting provisioning")
 
@@ -953,7 +921,7 @@ func (p *ironicProvisioner) Adopt() (result provisioner.Result, err error) {
 // Provision writes the image from the host spec to the host. It may
 // be called multiple times, and should return true for its dirty flag
 // until the deprovisioning operation is completed.
-func (p *ironicProvisioner) Provision(getUserData provisioner.UserDataSource) (result provisioner.Result, err error) {
+func (p *ironicProvisioner) Provision(hostConf provisioner.HostConfigData) (result provisioner.Result, err error) {
 	var ironicNode *nodes.Node
 
 	if ironicNode, err = p.findExistingHost(); err != nil {
@@ -965,12 +933,7 @@ func (p *ironicProvisioner) Provision(getUserData provisioner.UserDataSource) (r
 
 	p.log.Info("provisioning image to host", "state", ironicNode.ProvisionState)
 
-	// FIXME(dhellmann): The Stein version of Ironic supports passing
-	// a URL. When we upgrade, we can stop doing this work ourself.
-	checksum, err := p.getImageChecksum()
-	if err != nil {
-		return result, errors.Wrap(err, "failed to retrieve image checksum")
-	}
+	checksum := p.host.Spec.Image.Checksum
 
 	// Local variable to make it easier to test if ironic is
 	// configured with the same image we are trying to provision to
@@ -1008,29 +971,56 @@ func (p *ironicProvisioner) Provision(getUserData provisioner.UserDataSource) (r
 			return result, nil
 		}
 		p.log.Info("recovering from previous failure")
-		return p.startProvisioning(ironicNode, checksum, getUserData)
+		return p.startProvisioning(ironicNode, checksum, hostConf)
 
 	case nodes.Manageable:
-		return p.startProvisioning(ironicNode, checksum, getUserData)
+		return p.startProvisioning(ironicNode, checksum, hostConf)
 
 	case nodes.Available:
 		// After it is available, we need to start provisioning by
 		// setting the state to "active".
 		p.log.Info("making host active")
 
-		userData, err := getUserData()
+		// Retrieve cloud-init user data
+		userData, err := hostConf.UserData()
 		if err != nil {
 			return result, errors.Wrap(err, "could not retrieve user data")
+		}
+
+		// Retrieve cloud-init network_data.json. Default value is empty
+		networkDataRaw, err := hostConf.NetworkData()
+		if err != nil {
+			return result, errors.Wrap(err, "could not retrieve network data")
+		}
+		var networkData map[string]interface{}
+		if err = yaml.Unmarshal([]byte(networkDataRaw), &networkData); err != nil {
+			return result, errors.Wrap(err, "failed to unmarshal network_data.json from secret")
+		}
+
+		// Retrieve cloud-init meta_data.json with falback to default
+		metaData := map[string]interface{}{
+			"uuid":             string(p.host.ObjectMeta.UID),
+			"metal3-namespace": p.host.ObjectMeta.Namespace,
+			"metal3-name":      p.host.ObjectMeta.Name,
+			"local-hostname":   p.host.ObjectMeta.Name,
+			"local_hostname":   p.host.ObjectMeta.Name,
+		}
+		metaDataRaw, err := hostConf.MetaData()
+		if err != nil {
+			return result, errors.Wrap(err, "could not retrieve metadata")
+		}
+		if metaDataRaw != "" {
+			if err = yaml.Unmarshal([]byte(metaDataRaw), &metaData); err != nil {
+				return result, errors.Wrap(err, "failed to unmarshal metadata from secret")
+			}
 		}
 
 		var configDrive nodes.ConfigDrive
 		if userData != "" {
 			configDrive = nodes.ConfigDrive{
-				UserData: userData,
-				// cloud-init requires that meta_data.json exists and
-				// that the "uuid" field is present to process
-				// any of the config drive contents.
-				MetaData: map[string]interface{}{"uuid": p.host.Status.Provisioning.ID},
+				UserData:    userData,
+				MetaData:    metaData,
+				NetworkData: networkData,
 			}
 			if err != nil {
 				return result, errors.Wrap(err, "failed to build config drive")

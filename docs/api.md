@@ -7,6 +7,18 @@ defines a physical host and its properties. The **BareMetalHost** embeds
 two well differentiated sections, the bare metal host specification
 and its current status.
 
+### Pausing reconciliation
+
+It is possible to pause the reconciliation of a BareMetalHost object by adding
+an annotation `baremetalhost.metal3.io/paused`. **Metal³**  provider sets the
+value of this annotation as `metal3.io/capm3` when the cluster to which the
+**BareMetalHost** belongs, is paused and removes it when the cluster is
+not paused. If you want to pause the reconciliation of **BareMetalHost** you can
+put any value on this annotation **other than `metal3.io/capm3`**. Please make
+sure that you remove the annotation  **only if the value of the annotation is
+not `metal3.io/capm3`, but another value that you have provided**. Removing the
+annotation will enable the reconciliation again.
+
 ### BareMetalHost spec
 
 The *BareMetalHost's* *spec* defines the desire state of the host. It contains
@@ -23,15 +35,24 @@ mainly, but not only, provisioning details.
         and the port is optional, if using the default one (623).
     * Dell iDRAC
       * `idrac://` (or `idrac+http://` to disable TLS).
+      * `idrac-virtualmedia://` to use virtual media instead of PXE
+        for attaching the provisioning image to the host.
     * Fujitsu iRMC
       * `irmc://<host>:<port>`, where `<port>` is optional if using the default.
     * Redfish
-      * `redfish://` (or `redfish+http://` to disable TLS), the hostname
-        or IP address, and the path to the system ID are required,
-        for example `redfish://myhost.example/redfish/v1/Systems/MySystemExample`
+      * `redfish://` (or `redfish+http://` to disable TLS)
+      * `redfish-virtualmedia://` to use virtual media instead of PXE
+        for attaching the provisioning image to the host.
+      * The hostname or IP address, and the path to the system ID are
+        required for all variants.  For example
+        `redfish://myhost.example/redfish/v1/Systems/System.Embedded.1`
+        or `redfish://myhost.example/redfish/v1/Systems/1`
 
   * *credentialsName* -- A reference to a *secret* containing the
     username and password for the BMC.
+
+  * *disableCertificateVerification* -- A boolean to skip certificate
+    validation when true.
 
 * *online* -- A boolean indicating whether the host should be powered on
   (true) or off (false). Changing this value will trigger a change in
@@ -56,6 +77,10 @@ mainly, but not only, provisioning details.
 * *userData* -- A reference to the Secret containing the cloudinit user data
   and its namespace, so it can be attached to the host before it boots
   for configuring different aspects of the OS (like networking, storage, ...).
+
+* *networkData* -- A reference to the Secret containing the network
+  configuration data (e.g. network\_data.json) and its namespace, so it can be
+  attached to the host before it boots to set network up
 
 * *description* -- A human-provided string to help identify the host.
 
@@ -136,6 +161,7 @@ details, etc.
   | `libvirt`           | /dev/vda        |
   | `dell`              | HCTL: 0:0:0:0   |
   | `dell-raid`         | HCTL: 0:2:0:0   |
+  | `openstack`         | /dev/vdb        |
 
   **NOTE:** These are subject to change.
 
@@ -151,10 +177,10 @@ details, etc.
     * *match profile* -- The discovered hardware details on the host
       are being compared against known profiles.
     * *ready* -- The host is available to be consumed.
-    * *validation error* -- The provisioning steps found an error.
     * *provisioning* -- An image is being written to the host's disk(s).
     * *provisioning error* -- The image could not be written to the host.
-    * *provisioned* -- An image has been completely written to the host's disk(s). 
+    * *provisioned* -- An image has been completely written to the host's
+      disk(s).
     * *externally provisioned* -- Metal³ does not manage the image on the host.
     * *deprovisioning* -- The image is being wiped from the host's disk(s).
     * *inspecting* -- The hardware details for the host are being collected
@@ -198,6 +224,12 @@ spec:
   online: true
   userData:
     name: bmo-master-user-data
+    namespace: bmo-project
+  networkData:
+    name: bmo-master-network-data
+    namespace: bmo-project
+  metaData:
+    name: bmo-master-meta-data
     namespace: bmo-project
 status:
   errorMessage: ""
